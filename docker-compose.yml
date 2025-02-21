@@ -1,0 +1,9 @@
+services:
+  bnnc_main:
+    image: kizyanov/bnnc_main:latest
+    build: .
+    container_name: bnnc_main
+    tty: true
+    restart: always
+    env_file:
+      - .env

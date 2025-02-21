@@ -1,0 +1,39 @@
+[tool.poetry]
+name = "bnnc2"
+version = "0.1.0"
+description = ""
+authors = ["''"]
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "3.13.2"
+result = "0.17.0"
+orjson = "3.10.15"
+aiohttp = { extras = ["speedups"], version = "3.11.12" }
+loguru = "0.7.3"
+websockets = "15.0"
+dacite = "1.9.2"
+asyncpg = "0.30.0"
+asyncpg-stubs = "0.30.0"
+
+
+[tool.poetry.group.dev.dependencies]
+black = "25.1.0"
+ruff = "0.9.7"
+mypy = "1.15.0"
+vulture = "2.14"
+pytest-cov = "6.0.0"
+
+[tool.ruff]
+lint.select = ["ALL"]
+lint.ignore = []
+lint.fixable = ["I", "COM", "D202"]
+lint.mccabe.max-complexity = 5
+lint.pydocstyle.convention = "google"
+
+target-version = "py313"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
