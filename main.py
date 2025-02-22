@@ -248,7 +248,7 @@ class BNNC:
         """Get headers for http request."""
         return Ok(
             {
-                "X-MBX-APIKEY": self.SECRET,
+                "X-MBX-APIKEY": self.KEY,
             },
         )
 
