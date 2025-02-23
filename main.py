@@ -12,6 +12,15 @@ from typing import Any, Self
 from urllib.parse import urljoin
 
 from aiohttp import ClientConnectorError, ClientSession
+from dacite import (
+    ForwardReferenceError,
+    MissingValueError,
+    StrictUnionMatchError,
+    UnexpectedDataError,
+    UnionMatchError,
+    WrongTypeError,
+    from_dict,
+)
 from loguru import logger
 from orjson import JSONDecodeError, JSONEncodeError, dumps, loads
 from result import Err, Ok, Result, do, do_async
@@ -26,6 +35,97 @@ class TelegramSendMsg:
         """Parse response request."""
 
         ok: bool = field(default=False)
+
+
+@dataclass(frozen=True)
+class SapiV1MarginAccountGET:
+    """https://developers.binance.com/docs/margin_trading/account/Query-Cross-Margin-Account-Details."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        @dataclass(frozen=True)
+        class Assert:
+            """.
+
+            netAsset = free + locked - borrowed - interest
+            """
+
+            asset: str = field(default="")
+            borrowed: str = field(default="")
+            free: str = field(default="")
+            interest: str = field(default="")
+            locked: str = field(default="")
+            netAsset: str = field(default="")
+
+        userAssets: list[Assert] = field(default_factory=list[Assert])
+
+
+@dataclass(frozen=True)
+class SapiV1MarginOrderPOST:
+    """https://developers.binance.com/docs/margin_trading/trade/Margin-Account-New-Order#http-request."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        symbol: str = field(default="")
+        clientOrderId: str = field(default="")
+
+
+@dataclass(frozen=True)
+class SapiV1MarginOpenOrdersDELETE:
+    """https://developers.binance.com/docs/margin_trading/trade/Margin-Account-Cancel-All-Open-Orders#http-request."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+
+@dataclass(frozen=True)
+class ApiV3ExchangeInfoGET:
+    """."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        @dataclass(frozen=True)
+        class Symbol:
+            """."""
+
+            @dataclass(frozen=True)
+            class Filter:
+                """."""
+
+                filterType: str = field(default="")
+                tickSize: str = field(default="")
+                stepSize: str = field(default="")
+                minQty: str = field(default="")
+
+            symbol: str = field(default="")
+            baseAsset: str = field(default="")
+            baseAssetPrecision: str = field(default="")
+            quoteAsset: str = field(default="")
+            quoteAssetPrecision: str = field(default="")
+            isMarginTradingAllowed: bool = field(default=False)
+
+            filters: list[Filter] = field(default_factory=list[Filter])
+
+        symbols: list[Symbol] = field(default_factory=list[Symbol])
+
+
+@dataclass(frozen=True)
+class ApiV3TickerPrice:
+    """."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        symbol: str = field(default="")
+        price: str = field(default="")
 
 
 @dataclass
@@ -252,8 +352,11 @@ class BNNC:
             },
         )
 
-    def get_http_params(self: Self) -> Result[dict[str, str | int], Exception]:
-        """."""
+    def get_init_http_params(self: Self) -> Result[dict[str, str | int], Exception]:
+        """Get init params for request.
+
+        return {"recvWindows": 10000, "timestamp": 123131231}
+        """
         return do(
             Ok({"recvWindows": 10000, "timestamp": now_time})
             for now_time in self.get_now_time()
@@ -309,16 +412,7 @@ class BNNC:
             for hmac_data in self.convert_hmac_to_hexdigest(hmac_object)
         )
 
-    def update_data_signature(
-        self: Self,
-        data: dict[str, str | int],
-        signature: str,
-    ) -> Result[dict[str, str | int], Exception]:
-        """."""
-        data.update({"signature": signature})
-        return Ok(data)
-
-    def encrypt_data_params(
+    def get_signature(
         self: Self,
         params: dict[str, str | int],
     ) -> Result[str, Exception]:
@@ -331,9 +425,65 @@ class BNNC:
             for sign_params in self.encrypt_data(secret_bytes, params_string_bytes)
         )
 
+    def convert_to_dataclass_from_dict[T](
+        self: Self,
+        data_class: type[T],
+        data: dict[str, Any],
+    ) -> Result[T, Exception]:
+        """Convert dict to dataclass."""
+        try:
+            return Ok(
+                from_dict(
+                    data_class=data_class,
+                    data=data,
+                ),
+            )
+        except (
+            WrongTypeError,
+            MissingValueError,
+            UnionMatchError,
+            StrictUnionMatchError,
+            UnexpectedDataError,
+            ForwardReferenceError,
+        ) as exc:
+            return Err(exc)
+
+    def union_params(
+        self: Self,
+        data: dict[str, str | int],
+        unioned_data: dict[str, str | int],
+    ) -> Result[dict[str, str | int], Exception]:
+        """."""
+        try:
+            data.update(unioned_data)
+            return Ok(data)
+        except (TypeError, AttributeError) as exc:
+            return Err(exc)
+
+    def add_signature_to_params(
+        self: Self,
+        params: dict[str, str | int],
+        signature: str,
+    ) -> Result[dict[str, str | int], Exception]:
+        """."""
+        try:
+            params.update({"signature": signature})
+            return Ok(params)
+        except (TypeError, AttributeError) as exc:
+            return Err(exc)
+
+    def cancatinate_str(self: Self, *args: str) -> Result[str, Exception]:
+        """Cancatinate to str."""
+        try:
+            return Ok("".join(args))
+        except TypeError as exc:
+            logger.exception(exc)
+            return Err(exc)
+
     async def get_sapi_v1_margin_account(
         self: Self,
-    ) -> Result[str, Exception]:
+        user_params: dict[str, str | int],
+    ) -> Result[SapiV1MarginAccountGET.Res, Exception]:
         """Get all account balance.
 
         https://developers.binance.com/docs/margin_trading/account/Query-Cross-Margin-Account-Details
@@ -341,12 +491,23 @@ class BNNC:
         uri = "/sapi/v1/margin/account"
         method = "GET"
         return await do_async(
-            Ok("test")
-            for init_params in self.get_http_params()
-            for ff in self.encrypt_data_params(init_params)
-            for s in self.update_data_signature(init_params, ff)
-            for params_string in self.get_http_params_as_str(s)
-            for full_url in self.get_full_url(self.BASE_URL, f"{uri}?" + params_string)
+            Ok(data_dataclass)
+            for init_params in self.get_init_http_params()
+            for union_params in self.union_params(init_params, user_params)
+            for sign_union_params in self.get_signature(union_params)
+            for complete_params in self.add_signature_to_params(
+                union_params,
+                sign_union_params,
+            )
+            for complete_params_str in self.get_http_params_as_str(complete_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
             for headers in self.get_headers_auth()
             for response_bytes in await self.request(
                 method=method,
@@ -354,7 +515,10 @@ class BNNC:
                 headers=headers,
             )
             for response_dict in self.parse_bytes_to_dict(response_bytes)
-            for _ in self.logger_info(response_dict)
+            for data_dataclass in self.convert_to_dataclass_from_dict(
+                SapiV1MarginAccountGET.Res,
+                response_dict,
+            )
         )
 
     async def pre_init(self: Self) -> Result[Self, Exception]:
@@ -368,7 +532,8 @@ class BNNC:
         return await do_async(
             Ok(self)
             for _ in self.create_book()
-            for _ in await self.get_sapi_v1_margin_account()
+            for margin_account in await self.get_sapi_v1_margin_account({})
+            for _ in self.logger_success(margin_account)
         )
 
 
@@ -392,3 +557,5 @@ async def main() -> Result[None, Exception]:
 if __name__ == "__main__":
     """Main enter."""
     asyncio.run(main())
+
+# /sapi/v1/margin/allPairs
