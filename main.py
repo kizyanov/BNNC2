@@ -815,10 +815,13 @@ class BNNC:
 
     def show_usdt_count(self: Self) -> Result[None, Exception]:
         """Log usdt count in each token."""
-        for ticket in self.book:
+        ss = Decimal("0")
+        for index, ticket in enumerate(self.book, 1):
             self.logger_success(
-                f"{ticket}:{self.book[ticket].balance * self.book[ticket].last_price:.2f}",
+                f"{index} {ticket}:{self.book[ticket].balance * self.book[ticket].last_price:.2f}",
             )
+            ss += self.book[ticket].balance * self.book[ticket].last_price
+        self.logger_success(f"{ss:.2f}")
         return Ok(None)
 
     async def pre_init(self: Self) -> Result[Self, Exception]:
