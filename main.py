@@ -130,7 +130,7 @@ class ApiV3ExchangeInfoGET:
 
 @dataclass(frozen=True)
 class ApiV3TickerPrice:
-    """."""
+    """https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#symbol-price-ticker."""
 
     @dataclass(frozen=True)
     class Res:
@@ -456,7 +456,7 @@ class BNNC:
             for sign_params in self.encrypt_data(secret_bytes, params_string_bytes)
         )
 
-    def convert_list_to_dataclass_from_dict[T](
+    def convert_to_dataclass_from_list[T](
         self: Self,
         data_class: type[T],
         data: list[dict[str, Any]],
@@ -621,6 +621,40 @@ class BNNC:
             )
         )
 
+    async def get_api_v3_ticker_price(
+        self: Self,
+        user_params: dict[str, str | int],
+    ) -> Result[list[ApiV3TickerPrice.Res], Exception]:
+        """Get ticker price.
+
+        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#symbol-price-ticker
+        """
+        uri = "/api/v3/ticker/price"
+        method = "GET"
+        return await do_async(
+            Ok(data_dataclass)
+            for complete_params_str in self.get_http_params_as_str(user_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
+            for headers in self.get_headers_auth()
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers=headers,
+            )
+            for response_list in self.parse_bytes_to_list(response_bytes)
+            for data_dataclass in self.convert_to_dataclass_from_list(
+                ApiV3TickerPrice.Res,
+                response_list,
+            )
+        )
+
     async def get_api_v3_exchange_info(
         self: Self,
     ) -> Result[ApiV3ExchangeInfoGET.Res, Exception]:
@@ -718,9 +752,25 @@ class BNNC:
             for _ in self._fill_min_base_increment(ticket_info)
         )
 
-    async def fill_last_price(self: Self) -> Result[None, Exception]:
-        """."""
+    def _fill_last_price(
+        self: Self,
+        data: list[ApiV3TickerPrice.Res],
+    ) -> Result[None, Exception]:
+        """Fill last price for each token."""
+        for ticket in data:
+            symbol = ticket.symbol.replace("USDT", "")
+            if symbol in self.book:
+                self.book[symbol].last_price = Decimal(ticket.price)
+
         return Ok(None)
+
+    async def fill_last_price(self: Self) -> Result[None, Exception]:
+        """Fill last price for first order init."""
+        return await do_async(
+            Ok(None)
+            for market_prices in await self.get_api_v3_ticker_price({})
+            for _ in self._fill_last_price(market_prices)
+        )
 
     async def get_sapi_v1_margin_open_orders(
         self: Self,
@@ -757,11 +807,19 @@ class BNNC:
                 headers=headers,
             )
             for response_list in self.parse_bytes_to_list(response_bytes)
-            for data_dataclass in self.convert_list_to_dataclass_from_dict(
+            for data_dataclass in self.convert_to_dataclass_from_list(
                 SapiV1MarginOpenOrdersGET.Res,
                 response_list,
             )
         )
+
+    def show_usdt_count(self: Self) -> Result[None, Exception]:
+        """Log usdt count in each token."""
+        for ticket in self.book:
+            self.logger_success(
+                f"{ticket}:{self.book[ticket].balance * self.book[ticket].last_price:.2f}",
+            )
+        return Ok(None)
 
     async def pre_init(self: Self) -> Result[Self, Exception]:
         """Pre-init.
@@ -778,7 +836,8 @@ class BNNC:
             for _ in await self.massive_cancel_order(orders_for_cancel)
             for _ in await self.fill_balance()
             for _ in await self.fill_increment()
-            for _ in self.logger_success(self.book)
+            for _ in await self.fill_last_price()
+            for _ in self.show_usdt_count()
         )
 
 
