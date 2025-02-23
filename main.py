@@ -84,6 +84,17 @@ class SapiV1MarginOpenOrdersDELETE:
 
 
 @dataclass(frozen=True)
+class SapiV1MarginOpenOrdersGET:
+    """."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        clientOrderId: str = field(default="")
+
+
+@dataclass(frozen=True)
 class ApiV3ExchangeInfoGET:
     """."""
 
@@ -310,6 +321,11 @@ class BNNC:
         logger.info(data)
         return Ok(data)
 
+    def logger_exception[T](self: Self, data: T) -> Result[T, Exception]:
+        """Exception logger for Pipes."""
+        logger.exception(data)
+        return Ok(data)
+
     def get_full_url(
         self: Self,
         base_url: str,
@@ -337,6 +353,20 @@ class BNNC:
         """Parse bytes[json] to dict.
 
         b'{"qaz":"wsx"}' -> {"qaz":"wsx"}
+        """
+        try:
+            return Ok(loads(data))
+        except JSONDecodeError as exc:
+            logger.exception(exc)
+            return Err(exc)
+
+    def parse_bytes_to_list(
+        self: Self,
+        data: bytes | str,
+    ) -> Result[list[Any], Exception]:
+        """Parse bytes[json] to list.
+
+        b'[{"qaz":"wsx"}]' -> [{"qaz":"wsx"}]
         """
         try:
             return Ok(loads(data))
@@ -424,6 +454,25 @@ class BNNC:
             for secret_bytes in self.encode(self.SECRET)
             for sign_params in self.encrypt_data(secret_bytes, params_string_bytes)
         )
+
+    def convert_list_to_dataclass_from_dict[T](
+        self: Self,
+        data_class: type[T],
+        data: list[dict[str, Any]],
+    ) -> Result[list[T], Exception]:
+        """Convert list object to list dataclasses."""
+        result: list[T] = []
+        for obj in data:
+            match self.convert_to_dataclass_from_dict(
+                data_class,
+                obj,
+            ):
+                case Ok(res):
+                    result.append(res)
+                case Err(exc):
+                    self.logger_exception(exc)
+                    return Err(exc)
+        return Ok(result)
 
     def convert_to_dataclass_from_dict[T](
         self: Self,
@@ -521,6 +570,47 @@ class BNNC:
             )
         )
 
+    async def get_all_open_orders(
+        self: Self,
+        user_params: dict[str, str | int],
+    ) -> Result[list[SapiV1MarginOpenOrdersGET.Res], Exception]:
+        """Get all open orders.
+
+        https://developers.binance.com/docs/margin_trading/trade/Query-Margin-Account-Open-Orders
+        """
+        uri = "/sapi/v1/margin/openOrders"
+        method = "GET"
+        return await do_async(
+            Ok(data_dataclass)
+            for init_params in self.get_init_http_params()
+            for union_params in self.union_params(init_params, user_params)
+            for sign_union_params in self.get_signature(union_params)
+            for complete_params in self.add_signature_to_params(
+                union_params,
+                sign_union_params,
+            )
+            for complete_params_str in self.get_http_params_as_str(complete_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
+            for headers in self.get_headers_auth()
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers=headers,
+            )
+            for response_list in self.parse_bytes_to_list(response_bytes)
+            for data_dataclass in self.convert_list_to_dataclass_from_dict(
+                SapiV1MarginOpenOrdersGET.Res,
+                response_list,
+            )
+        )
+
     async def pre_init(self: Self) -> Result[Self, Exception]:
         """Pre-init.
 
@@ -532,8 +622,9 @@ class BNNC:
         return await do_async(
             Ok(self)
             for _ in self.create_book()
+            for orders_for_cancel in await self.get_all_open_orders({})
             for margin_account in await self.get_sapi_v1_margin_account({})
-            for _ in self.logger_success(margin_account)
+            for _ in self.logger_success(orders_for_cancel)
         )
 
 
