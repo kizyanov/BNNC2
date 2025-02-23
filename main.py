@@ -75,12 +75,15 @@ class SapiV1MarginOrderPOST:
 
 
 @dataclass(frozen=True)
-class SapiV1MarginOpenOrdersDELETE:
-    """https://developers.binance.com/docs/margin_trading/trade/Margin-Account-Cancel-All-Open-Orders#http-request."""
+class SapiV1MarginOrderDELETE:
+    """https://developers.binance.com/docs/margin_trading/trade/Margin-Account-Cancel-Order."""
 
     @dataclass(frozen=True)
     class Res:
         """."""
+
+        symbol: str = field(default="")
+        status: str = field(default="")
 
 
 @dataclass(frozen=True)
@@ -91,7 +94,7 @@ class SapiV1MarginOpenOrdersGET:
     class Res:
         """."""
 
-        clientOrderId: str = field(default="")
+        orderId: int = field(default=0)
 
 
 @dataclass(frozen=True)
@@ -177,6 +180,37 @@ class BNNC:
         self.PG_PORT = self.get_env("PG_PORT").unwrap()
 
         logger.success("Settings are OK!")
+
+    def logger_success[T](self: Self, data: T) -> Result[T, Exception]:
+        """Success logger for Pipes."""
+        logger.success(data)
+        return Ok(data)
+
+    def logger_info[T](self: Self, data: T) -> Result[T, Exception]:
+        """Info logger for Pipes."""
+        logger.info(data)
+        return Ok(data)
+
+    def logger_exception[T](self: Self, data: T) -> Result[T, Exception]:
+        """Exception logger for Pipes."""
+        logger.exception(data)
+        return Ok(data)
+
+    def encode(self: Self, data: str) -> Result[bytes, Exception]:
+        """Return Ok(bytes) from str data."""
+        try:
+            return Ok(data.encode())
+        except AttributeError as exc:
+            logger.exception(exc)
+            return Err(exc)
+
+    def decode(self: Self, data: bytes) -> Result[str, Exception]:
+        """Return Ok(str) from bytes data."""
+        try:
+            return Ok(data.decode())
+        except AttributeError as exc:
+            logger.exception(exc)
+            return Err(exc)
 
     def convert_to_int(self: Self, data: float) -> Result[int, Exception]:
         """Convert data to int."""
@@ -311,21 +345,6 @@ class BNNC:
             logger.exception(exc)
             return Err(exc)
 
-    def logger_success[T](self: Self, data: T) -> Result[T, Exception]:
-        """Success logger for Pipes."""
-        logger.success(data)
-        return Ok(data)
-
-    def logger_info[T](self: Self, data: T) -> Result[T, Exception]:
-        """Info logger for Pipes."""
-        logger.info(data)
-        return Ok(data)
-
-    def logger_exception[T](self: Self, data: T) -> Result[T, Exception]:
-        """Exception logger for Pipes."""
-        logger.exception(data)
-        return Ok(data)
-
     def get_full_url(
         self: Self,
         base_url: str,
@@ -410,22 +429,6 @@ class BNNC:
     ) -> Result[HMAC, Exception]:
         """Get default HMAC."""
         return Ok(hmac_new(secret, data, sha256))
-
-    def encode(self: Self, data: str) -> Result[bytes, Exception]:
-        """Return Ok(bytes) from str data."""
-        try:
-            return Ok(data.encode())
-        except AttributeError as exc:
-            logger.exception(exc)
-            return Err(exc)
-
-    def decode(self: Self, data: bytes) -> Result[str, Exception]:
-        """Return Ok(str) from bytes data."""
-        try:
-            return Ok(data.decode())
-        except AttributeError as exc:
-            logger.exception(exc)
-            return Err(exc)
 
     def convert_hmac_to_hexdigest(
         self: Self,
@@ -529,6 +532,56 @@ class BNNC:
             logger.exception(exc)
             return Err(exc)
 
+    async def delete_sapi_v1_margin_order(
+        self: Self,
+        user_params: dict[str, str | int],
+    ) -> Result[SapiV1MarginOrderDELETE.Res, Exception]:
+        """Cancel open order.
+
+        https://developers.binance.com/docs/margin_trading/trade/Margin-Account-Cancel-Order
+        """
+        uri = "/sapi/v1/margin/order"
+        method = "DELETE"
+        return await do_async(
+            Ok(data_dataclass)
+            for init_params in self.get_init_http_params()
+            for union_params in self.union_params(init_params, user_params)
+            for sign_union_params in self.get_signature(union_params)
+            for complete_params in self.add_signature_to_params(
+                union_params,
+                sign_union_params,
+            )
+            for complete_params_str in self.get_http_params_as_str(complete_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
+            for headers in self.get_headers_auth()
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers=headers,
+            )
+            for response_dict in self.parse_bytes_to_dict(response_bytes)
+            for data_dataclass in self.convert_to_dataclass_from_dict(
+                SapiV1MarginOrderDELETE.Res,
+                response_dict,
+            )
+        )
+
+    async def massive_cancel_order(
+        self: Self,
+        data: list[SapiV1MarginOpenOrdersGET.Res],
+    ) -> Result[None, Exception]:
+        """Cancel all open order."""
+        for order in data:
+            await self.delete_sapi_v1_margin_order({"orderId": order.orderId})
+        return Ok(None)
+
     async def get_sapi_v1_margin_account(
         self: Self,
         user_params: dict[str, str | int],
@@ -570,7 +623,33 @@ class BNNC:
             )
         )
 
-    async def get_all_open_orders(
+    def _fill_balance(
+        self: Self,
+        data: SapiV1MarginAccountGET.Res,
+    ) -> Result[None, Exception]:
+        """."""
+        for ticket in data.userAssets:
+            if ticket.asset in self.book:
+                self.book[ticket.asset].balance = Decimal(ticket.netAsset)
+        return Ok(None)
+
+    async def fill_balance(self: Self) -> Result[None, Exception]:
+        """Fill all balance by ENVs."""
+        return await do_async(
+            Ok(None)
+            for balance_accounts in await self.get_sapi_v1_margin_account({})
+            for _ in self._fill_balance(balance_accounts)
+        )
+
+    async def fill_increment(self: Self) -> Result[None, Exception]:
+        """Fill increment from api."""
+        return Ok(None)
+
+    async def fill_last_price(self: Self) -> Result[None, Exception]:
+        """."""
+        return Ok(None)
+
+    async def get_sapi_v1_margin_open_orders(
         self: Self,
         user_params: dict[str, str | int],
     ) -> Result[list[SapiV1MarginOpenOrdersGET.Res], Exception]:
@@ -622,9 +701,10 @@ class BNNC:
         return await do_async(
             Ok(self)
             for _ in self.create_book()
-            for orders_for_cancel in await self.get_all_open_orders({})
-            for margin_account in await self.get_sapi_v1_margin_account({})
-            for _ in self.logger_success(orders_for_cancel)
+            for orders_for_cancel in await self.get_sapi_v1_margin_open_orders({})
+            for _ in await self.massive_cancel_order(orders_for_cancel)
+            for _ in await self.fill_balance()
+            for _ in self.logger_success(self.book)
         )
 
 
