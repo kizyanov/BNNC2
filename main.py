@@ -623,6 +623,33 @@ class BNNC:
             )
         )
 
+    async def get_api_v3_exchange_info(
+        self: Self,
+    ) -> Result[ApiV3ExchangeInfoGET.Res, Exception]:
+        """Get symbol information.
+
+        https://github.com/binance/binance-spot-api-docs/blob/master/rest-api.md#exchange-information
+        """
+        uri = "/api/v3/exchangeInfo"
+        method = "GET"
+        return await do_async(
+            Ok(data_dataclass)
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                uri,
+            )
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers={},
+            )
+            for response_dict in self.parse_bytes_to_dict(response_bytes)
+            for data_dataclass in self.convert_to_dataclass_from_dict(
+                ApiV3ExchangeInfoGET.Res,
+                response_dict,
+            )
+        )
+
     def _fill_balance(
         self: Self,
         data: SapiV1MarginAccountGET.Res,
@@ -641,9 +668,57 @@ class BNNC:
             for _ in self._fill_balance(balance_accounts)
         )
 
+    def _fill_base_increment(
+        self: Self,
+        data: ApiV3ExchangeInfoGET.Res,
+    ) -> Result[None, Exception]:
+        """Fill base increment by each token."""
+        for symbol in data.symbols:
+            if symbol.baseAsset in self.book and symbol.quoteAsset == "USDT":
+                for one_filter in symbol.filters:
+                    if one_filter.filterType == "LOT_SIZE":
+                        self.book[symbol.baseAsset].baseincrement = Decimal(
+                            one_filter.stepSize,
+                        )
+        return Ok(None)
+
+    def _fill_price_increment(
+        self: Self,
+        data: ApiV3ExchangeInfoGET.Res,
+    ) -> Result[None, Exception]:
+        """Fill price increment by each token."""
+        for symbol in data.symbols:
+            if symbol.baseAsset in self.book and symbol.quoteAsset == "USDT":
+                for one_filter in symbol.filters:
+                    if one_filter.filterType == "PRICE_FILTER":
+                        self.book[symbol.baseAsset].priceincrement = Decimal(
+                            one_filter.tickSize,
+                        )
+        return Ok(None)
+
+    def _fill_min_base_increment(
+        self: Self,
+        data: ApiV3ExchangeInfoGET.Res,
+    ) -> Result[None, Exception]:
+        """."""
+        for symbol in data.symbols:
+            if symbol.baseAsset in self.book and symbol.quoteAsset == "USDT":
+                for one_filter in symbol.filters:
+                    if one_filter.filterType == "LOT_SIZE":
+                        self.book[symbol.baseAsset].baseminsize = Decimal(
+                            one_filter.minQty,
+                        )
+        return Ok(None)
+
     async def fill_increment(self: Self) -> Result[None, Exception]:
         """Fill increment from api."""
-        return Ok(None)
+        return await do_async(
+            Ok(None)
+            for ticket_info in await self.get_api_v3_exchange_info()
+            for _ in self._fill_base_increment(ticket_info)
+            for _ in self._fill_price_increment(ticket_info)
+            for _ in self._fill_min_base_increment(ticket_info)
+        )
 
     async def fill_last_price(self: Self) -> Result[None, Exception]:
         """."""
@@ -704,6 +779,7 @@ class BNNC:
             for orders_for_cancel in await self.get_sapi_v1_margin_open_orders({})
             for _ in await self.massive_cancel_order(orders_for_cancel)
             for _ in await self.fill_balance()
+            for _ in await self.fill_increment()
             for _ in self.logger_success(self.book)
         )
 
