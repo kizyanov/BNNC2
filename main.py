@@ -120,9 +120,7 @@ class ApiV3ExchangeInfoGET:
 
             symbol: str = field(default="")
             baseAsset: str = field(default="")
-            baseAssetPrecision: str = field(default="")
             quoteAsset: str = field(default="")
-            quoteAssetPrecision: str = field(default="")
             isMarginTradingAllowed: bool = field(default=False)
 
             filters: list[Filter] = field(default_factory=list[Filter])
