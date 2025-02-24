@@ -1103,7 +1103,7 @@ class BNNC:
                     for listen_key in self.export_listen_key(object_listen_key)
                     for url_ws in self.get_url_for_websocket(listen_key)
                     for ws in self.get_websocket(url_ws)
-                    for _ in self.logger_success(f"Got listen key:{ws}")
+                    for _ in self.logger_success(f"Got listen key:{listen_key}")
                     for _ in await self.runtime_events_ws(ws)
                 ):
                     case Err(exc):
