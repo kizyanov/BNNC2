@@ -1,12 +1,14 @@
 """BNNC2 trading bot for binance."""
 
 import asyncio
+import socket
 from dataclasses import dataclass, field
 from decimal import Decimal
 from hashlib import sha256
 from hmac import HMAC
 from hmac import new as hmac_new
 from os import environ
+from ssl import SSLError
 from time import time
 from typing import Any, Self
 from urllib.parse import urljoin
@@ -24,6 +26,8 @@ from dacite import (
 from loguru import logger
 from orjson import JSONDecodeError, JSONEncodeError, dumps, loads
 from result import Err, Ok, Result, do, do_async
+from websockets import ClientConnection, connect
+from websockets import exceptions as websockets_exceptions
 
 
 @dataclass(frozen=True)
@@ -35,6 +39,35 @@ class TelegramSendMsg:
         """Parse response request."""
 
         ok: bool = field(default=False)
+
+
+@dataclass(frozen=True)
+class WsEvent:
+    """Universal event.
+
+    https://developers.binance.com/docs/margin_trading/trade-data-stream/Event-Order-Update
+    https://developers.binance.com/docs/margin_trading/trade-data-stream/Event-Account-Update
+    """
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        @dataclass(frozen=True)
+        class Bs:
+            """."""
+
+            a: str = field(default="")
+            f: str = field(default="")
+            l: str = field(default="")
+
+        e: str = field(default="")
+        E: int = field(default=0)
+        u: int = field(default=0)
+        B: list[Bs] = field(default_factory=list[Bs])
+        s: str = field(default="")
+        p: str = field(default="")
+        X: str = field(default="")
 
 
 @dataclass(frozen=True)
@@ -60,6 +93,17 @@ class SapiV1MarginAccountGET:
             netAsset: str = field(default="")
 
         userAssets: list[Assert] = field(default_factory=list[Assert])
+
+
+@dataclass(frozen=True)
+class SapiV1UserDataStream:
+    """https://developers.binance.com/docs/margin_trading/trade-data-stream/Start-Margin-User-Data-Stream."""
+
+    @dataclass(frozen=True)
+    class Res:
+        """."""
+
+        listenKey: str = field(default="")
 
 
 @dataclass(frozen=True)
@@ -772,6 +816,81 @@ class BNNC:
             for _ in self._fill_last_price(market_prices)
         )
 
+    def check_telegram_response(
+        self: Self,
+        data: TelegramSendMsg.Res,
+    ) -> Result[None, Exception]:
+        """Check telegram response on msg."""
+        if data.ok:
+            return Ok(None)
+        return Err(Exception(f"{data}"))
+
+    def get_telegram_msg(
+        self: Self,
+        chat_id: str,
+        data: str,
+    ) -> Result[dict[str, bool | str], Exception]:
+        """Get msg for telegram in dict."""
+        return Ok(
+            {
+                "chat_id": chat_id,
+                "parse_mode": "HTML",
+                "disable_notification": True,
+                "text": data,
+            },
+        )
+
+    def get_telegram_url(self: Self) -> Result[str, Exception]:
+        """Get url for send telegram msg."""
+        return Ok(
+            f"https://api.telegram.org/bot{self.TELEGRAM_BOT_API_KEY}/sendMessage",
+        )
+
+    async def send_msg_to_each_chat_id(
+        self: Self,
+        chat_ids: list[str],
+        data: str,
+    ) -> Result[TelegramSendMsg.Res, Exception]:
+        """Send msg for each chat id."""
+        method = "POST"
+        for chat in chat_ids:
+            await do_async(
+                Ok(result)
+                for telegram_url in self.get_telegram_url()
+                for msg in self.get_telegram_msg(chat, data)
+                for msg_bytes in self.dumps_dict_to_bytes(msg)
+                for response_bytes in await self.request(
+                    url=telegram_url,
+                    method=method,
+                    headers={
+                        "Content-Type": "application/json",
+                    },
+                    data=msg_bytes,
+                )
+                for response_dict in self.parse_bytes_to_dict(response_bytes)
+                for data_dataclass in self.convert_to_dataclass_from_dict(
+                    TelegramSendMsg.Res,
+                    response_dict,
+                )
+                for result in self.check_telegram_response(data_dataclass)
+            )
+        return Ok(TelegramSendMsg.Res())
+
+    def get_chat_ids_for_telegram(self: Self) -> Result[list[str], Exception]:
+        """Get list chat id for current send."""
+        return Ok(self.TELEGRAM_BOT_CHAT_ID)
+
+    async def send_telegram_msg(self: Self, data: str) -> Result[None, Exception]:
+        """Send msg to telegram."""
+        match await do_async(
+            Ok(None)
+            for chat_ids in self.get_chat_ids_for_telegram()
+            for _ in await self.send_msg_to_each_chat_id(chat_ids, data)
+        ):
+            case Err(exc):
+                logger.exception(exc)
+        return Ok(None)
+
     async def get_sapi_v1_margin_open_orders(
         self: Self,
         user_params: dict[str, str | int],
@@ -843,6 +962,246 @@ class BNNC:
             for _ in self.show_usdt_count()
         )
 
+    async def get_sapi_v1_user_data_stream(
+        self: Self,
+        user_params: dict[str, str | int],
+    ) -> Result[SapiV1UserDataStream.Res, Exception]:
+        """Get listen key for websocket.
+
+        https://developers.binance.com/docs/margin_trading/trade-data-stream/Start-Margin-User-Data-Stream
+        """
+        uri = "/sapi/v1/userDataStream"
+        method = "POST"
+        return await do_async(
+            Ok(data_dataclass)
+            for init_params in self.get_init_http_params()
+            for union_params in self.union_params(init_params, user_params)
+            for sign_union_params in self.get_signature(union_params)
+            for complete_params in self.add_signature_to_params(
+                union_params,
+                sign_union_params,
+            )
+            for complete_params_str in self.get_http_params_as_str(complete_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
+            for headers in self.get_headers_auth()
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers=headers,
+            )
+            for response_dict in self.parse_bytes_to_dict(response_bytes)
+            for data_dataclass in self.convert_to_dataclass_from_dict(
+                SapiV1UserDataStream.Res,
+                response_dict,
+            )
+        )
+
+    def export_listen_key(
+        self: Self,
+        data: SapiV1UserDataStream.Res,
+    ) -> Result[str, Exception]:
+        """Export listenKey from SapiV1UserDataStream."""
+        return Ok(data.listenKey)
+
+    def events_balance(self: Self, data: WsEvent.Res) -> Result[None, Exception]:
+        """Event is balance."""
+        for symbol in data.B:
+            if symbol.a in self.book:
+                self.book[symbol.a].balance = Decimal(symbol.f) + Decimal(symbol.l)
+        return Ok(None)
+
+    def events_matching(self: Self, data: WsEvent.Res) -> Result[None, Exception]:
+        """."""
+        if data.X == "FILLED":
+            symbol = data.s.replace("USDT", "")
+            if symbol in self.book:
+                self.book[symbol].last_price = Decimal(data.p)
+                # send to db
+                # delete old orders
+                # place new orders
+        return Ok(None)
+
+    def processing_events(self: Self, data: WsEvent.Res) -> Result[None, Exception]:
+        """."""
+        match data.e:
+            case "outboundAccountPosition":
+                # change balance
+                self.events_balance(data)
+            case "executionReport":
+                # order has completed
+                self.events_matching(data)
+        return Ok(None)
+
+    async def listen_events_msg(
+        self: Self,
+        ws_inst: ClientConnection,
+    ) -> Result[None, Exception]:
+        """Infinity loop for listen events msgs."""
+        async for msg in ws_inst:
+            match do(
+                Ok(None)
+                for value in self.parse_bytes_to_dict(msg)
+                for data_dataclass in self.convert_to_dataclass_from_dict(
+                    WsEvent.Res,
+                    value,
+                )
+                for _ in self.processing_events(data_dataclass)
+            ):
+                case Err(exc):
+                    return Err(exc)
+        return Ok(None)
+
+    async def runtime_events_ws(
+        self: Self,
+        ws: connect,
+    ) -> Result[None, Exception]:
+        """Runtime listen websocket all time."""
+        async with ws as ws_inst:
+            match await do_async(
+                Ok(None) for _ in await self.listen_events_msg(ws_inst)
+            ):
+                case Err(exc):
+                    return Err(exc)
+        return Ok(None)
+
+    async def balancer(self: Self) -> Result[None, Exception]:
+        """Monitoring of balance.
+
+        Start listen websocket
+        """
+        reconnect_delay = 1
+        max_reconnect_delay = 60
+        while True:
+            try:
+                logger.info("balancer start")
+                match await do_async(
+                    Ok(None)
+                    for object_listen_key in await self.get_sapi_v1_user_data_stream({})
+                    for listen_key in self.export_listen_key(object_listen_key)
+                    for url_ws in self.get_url_for_websocket(listen_key)
+                    for ws in self.get_websocket(url_ws)
+                    for _ in await self.runtime_events_ws(ws)
+                ):
+                    case Err(exc):
+                        logger.exception(exc)
+                        await self.send_telegram_msg(
+                            "Drop balancer websocket: see logs",
+                        )
+            except (
+                ConnectionResetError,
+                websockets_exceptions.ConnectionClosed,
+                TimeoutError,
+                websockets_exceptions.WebSocketException,
+                socket.gaierror,
+                ConnectionRefusedError,
+                SSLError,
+                OSError,
+            ) as exc:
+                logger.exception(exc)
+                await self.send_telegram_msg("Drop balancer websocket: see logs")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(exc)
+                await self.send_telegram_msg("Unexpected error in balancer: see logs")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+    def get_url_for_websocket(self: Self, listen_key: str) -> Result[str, Exception]:
+        """."""
+        return Ok(f"wss://stream.binance.com:443/ws/{listen_key}")
+
+    def get_websocket(
+        self: Self,
+        url: str,
+    ) -> Result[connect, Exception]:
+        """Get connect for working with websocket by url."""
+        return Ok(
+            connect(
+                uri=url,
+                max_queue=1024,
+            ),
+        )
+
+    async def events(self: Self) -> Result[None, Exception]:
+        """Monitoring events from websocket.
+
+        Start listen websocket
+        """
+        reconnect_delay = 1
+        max_reconnect_delay = 60
+        while True:
+            try:
+                logger.info("events listen start")
+                match await do_async(
+                    Ok(None)
+                    for object_listen_key in await self.get_sapi_v1_user_data_stream({})
+                    for listen_key in self.export_listen_key(object_listen_key)
+                    for url_ws in self.get_url_for_websocket(listen_key)
+                    for ws in self.get_websocket(url_ws)
+                    for _ in await self.runtime_events_ws(ws)
+                ):
+                    case Err(exc):
+                        logger.exception(exc)
+                        await self.send_telegram_msg(
+                            "Drop matching websocket: see logs",
+                        )
+            except (
+                ConnectionResetError,
+                websockets_exceptions.ConnectionClosed,
+                TimeoutError,
+                websockets_exceptions.WebSocketException,
+                socket.gaierror,
+                ConnectionRefusedError,
+                SSLError,
+                OSError,
+            ) as exc:
+                logger.exception(exc)
+                await self.send_telegram_msg("Drop matching websocket: see logs")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(exc)
+                await self.send_telegram_msg("Unexpected error in matching: see logs")
+                await asyncio.sleep(reconnect_delay)
+                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
+
+    async def alertest(self: Self) -> Result[None, Exception]:
+        """Alert statistic."""
+        logger.info("alertest")
+        while True:
+            await do_async(Ok(None) for _ in await self.send_telegram_msg("binance"))
+            await asyncio.sleep(60 * 60)
+        return Ok(None)
+
+    async def start_up_orders(self: Self) -> Result[None, Exception]:
+        """."""
+        # wait while matcher and balancer would be ready
+        await asyncio.sleep(10)
+
+        return Ok(None)
+
+    async def infinity_task(self: Self) -> Result[None, Exception]:
+        """."""
+        async with asyncio.TaskGroup() as tg:
+            tasks = [
+                tg.create_task(self.events()),
+                tg.create_task(self.alertest()),
+                tg.create_task(self.start_up_orders()),
+            ]
+
+        for task in tasks:
+            return task.result()
+
+        return Ok(None)
+
 
 async def main() -> Result[None, Exception]:
     """Collect of major func."""
@@ -851,6 +1210,8 @@ async def main() -> Result[None, Exception]:
         Ok(None)
         for _ in await bnnc.pre_init()
         for _ in bnnc.logger_success("Pre-init OK!")
+        for _ in await bnnc.send_telegram_msg("Settings are OK!")
+        for _ in await bnnc.infinity_task()
     ):
         case Ok(None):
             pass
@@ -864,5 +1225,3 @@ async def main() -> Result[None, Exception]:
 if __name__ == "__main__":
     """Main enter."""
     asyncio.run(main())
-
-# /sapi/v1/margin/allPairs
