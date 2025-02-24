@@ -1071,50 +1071,6 @@ class BNNC:
                     return Err(exc)
         return Ok(None)
 
-    async def balancer(self: Self) -> Result[None, Exception]:
-        """Monitoring of balance.
-
-        Start listen websocket
-        """
-        reconnect_delay = 1
-        max_reconnect_delay = 60
-        while True:
-            try:
-                logger.info("balancer start")
-                match await do_async(
-                    Ok(None)
-                    for object_listen_key in await self.get_sapi_v1_user_data_stream({})
-                    for listen_key in self.export_listen_key(object_listen_key)
-                    for url_ws in self.get_url_for_websocket(listen_key)
-                    for ws in self.get_websocket(url_ws)
-                    for _ in self.logger_success(f"Got listen key:{ws}")
-                    for _ in await self.runtime_events_ws(ws)
-                ):
-                    case Err(exc):
-                        logger.exception(exc)
-                        await self.send_telegram_msg(
-                            "Drop balancer websocket: see logs",
-                        )
-            except (
-                ConnectionResetError,
-                websockets_exceptions.ConnectionClosed,
-                TimeoutError,
-                websockets_exceptions.WebSocketException,
-                socket.gaierror,
-                ConnectionRefusedError,
-                SSLError,
-                OSError,
-            ) as exc:
-                logger.exception(exc)
-                await self.send_telegram_msg("Drop balancer websocket: see logs")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(exc)
-                await self.send_telegram_msg("Unexpected error in balancer: see logs")
-                await asyncio.sleep(reconnect_delay)
-                reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
-
     def get_url_for_websocket(self: Self, listen_key: str) -> Result[str, Exception]:
         """."""
         return Ok(f"wss://stream.binance.com:443/ws/{listen_key}")
@@ -1147,12 +1103,13 @@ class BNNC:
                     for listen_key in self.export_listen_key(object_listen_key)
                     for url_ws in self.get_url_for_websocket(listen_key)
                     for ws in self.get_websocket(url_ws)
+                    for _ in self.logger_success(f"Got listen key:{ws}")
                     for _ in await self.runtime_events_ws(ws)
                 ):
                     case Err(exc):
                         logger.exception(exc)
                         await self.send_telegram_msg(
-                            "Drop matching websocket: see logs",
+                            "Drop websocket: see logs",
                         )
             except (
                 ConnectionResetError,
@@ -1165,12 +1122,12 @@ class BNNC:
                 OSError,
             ) as exc:
                 logger.exception(exc)
-                await self.send_telegram_msg("Drop matching websocket: see logs")
+                await self.send_telegram_msg("Drop websocket: see logs")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
             except Exception as exc:  # noqa: BLE001
                 logger.exception(exc)
-                await self.send_telegram_msg("Unexpected error in matching: see logs")
+                await self.send_telegram_msg("Unexpected error in websocket: see logs")
                 await asyncio.sleep(reconnect_delay)
                 reconnect_delay = min(reconnect_delay * 2, max_reconnect_delay)
 
