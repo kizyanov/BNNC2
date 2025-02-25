@@ -608,10 +608,11 @@ class BNNC:
                 url=full_url,
                 headers=headers,
             )
-            for response_list in self.parse_bytes_to_list(response_bytes)
-            for data_dataclass in self.convert_to_dataclass_from_list(
+            for response_dict in self.parse_bytes_to_dict(response_bytes)
+            for _ in self.logger_info(response_dict)
+            for data_dataclass in self.convert_to_dataclass_from_dict(
                 SapiV1MarginOrderPOST.Res,
-                response_list,
+                response_dict,
             )
         )
 
