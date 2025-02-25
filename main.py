@@ -574,6 +574,47 @@ class BNNC:
             logger.exception(exc)
             return Err(exc)
 
+    async def post_sapi_v1_margin_order(
+        self: Self,
+        user_params: dict[str, str | int],
+    ) -> Result[list[SapiV1MarginOrderPOST.Res], Exception]:
+        """Get all open orders.
+
+        https://developers.binance.com/docs/margin_trading/trade/Margin-Account-New-Order
+        """
+        uri = "/sapi/v1/margin/order"
+        method = "POST"
+        return await do_async(
+            Ok(data_dataclass)
+            for init_params in self.get_init_http_params()
+            for union_params in self.union_params(init_params, user_params)
+            for sign_union_params in self.get_signature(union_params)
+            for complete_params in self.add_signature_to_params(
+                union_params,
+                sign_union_params,
+            )
+            for complete_params_str in self.get_http_params_as_str(complete_params)
+            for params_str in self.cancatinate_str(
+                f"{uri}?",
+                complete_params_str,
+            )
+            for full_url in self.get_full_url(
+                self.BASE_URL,
+                params_str,
+            )
+            for headers in self.get_headers_auth()
+            for response_bytes in await self.request(
+                method=method,
+                url=full_url,
+                headers=headers,
+            )
+            for response_list in self.parse_bytes_to_list(response_bytes)
+            for data_dataclass in self.convert_to_dataclass_from_list(
+                SapiV1MarginOrderPOST.Res,
+                response_list,
+            )
+        )
+
     async def delete_sapi_v1_margin_order(
         self: Self,
         user_params: dict[str, str | int],
@@ -1143,6 +1184,24 @@ class BNNC:
         """."""
         # wait while matcher and balancer would be ready
         await asyncio.sleep(10)
+        for ticket in self.book:
+            match await do_async(
+                Ok(None)
+                for order_result in await self.post_sapi_v1_margin_order(
+                    {
+                        "symbol": f"{ticket}USDT",
+                        "side": "SELL",
+                        "type": "MARKET",
+                        "quantity": str(self.book[ticket].balance),
+                        "sideEffectType": "AUTO_BORROW_REPAY",
+                    },
+                )
+            ):
+                case Ok(order_result):
+                    logger.success(order_result)
+                case Err(exc):
+                    logger.exception(exc)
+        return Ok(None)
 
         return Ok(None)
 
