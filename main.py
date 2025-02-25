@@ -796,7 +796,7 @@ class BNNC:
                 for one_filter in symbol.filters:
                     if one_filter.filterType == "LOT_SIZE":
                         self.book[symbol.baseAsset].baseincrement = Decimal(
-                            one_filter.stepSize,
+                            str(float(one_filter.stepSize)),
                         )
         return Ok(None)
 
@@ -810,7 +810,7 @@ class BNNC:
                 for one_filter in symbol.filters:
                     if one_filter.filterType == "PRICE_FILTER":
                         self.book[symbol.baseAsset].priceincrement = Decimal(
-                            one_filter.tickSize,
+                            str(float(one_filter.tickSize)),
                         )
         return Ok(None)
 
@@ -824,7 +824,7 @@ class BNNC:
                 for one_filter in symbol.filters:
                     if one_filter.filterType == "LOT_SIZE":
                         self.book[symbol.baseAsset].baseminsize = Decimal(
-                            one_filter.minQty,
+                            str(float(one_filter.minQty)),
                         )
         return Ok(None)
 
