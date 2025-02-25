@@ -3,7 +3,7 @@
 import asyncio
 import socket
 from dataclasses import dataclass, field
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 from hashlib import sha256
 from hmac import HMAC
 from hmac import new as hmac_new
@@ -577,7 +577,7 @@ class BNNC:
     async def post_sapi_v1_margin_order(
         self: Self,
         user_params: dict[str, str | int],
-    ) -> Result[list[SapiV1MarginOrderPOST.Res], Exception]:
+    ) -> Result[SapiV1MarginOrderPOST.Res, Exception]:
         """Get all open orders.
 
         https://developers.binance.com/docs/margin_trading/trade/Margin-Account-New-Order
@@ -1181,19 +1181,36 @@ class BNNC:
             await asyncio.sleep(60 * 60)
         return Ok(None)
 
+    def decimal_to_str(self: Self, data: Decimal) -> Result[str, Exception]:
+        """Convert Decimal to str."""
+        return Ok(str(data))
+
+    def quantize_minus(
+        self: Self,
+        data: Decimal,
+        increment: Decimal,
+    ) -> Result[Decimal, Exception]:
+        """Quantize to down."""
+        return Ok(data.quantize(increment, ROUND_DOWN))
+
     async def start_up_orders(self: Self) -> Result[None, Exception]:
         """."""
         # wait while matcher and balancer would be ready
         await asyncio.sleep(10)
         for ticket in self.book:
             match await do_async(
-                Ok(None)
+                Ok(order_result)
+                for quantity in self.quantize_minus(
+                    self.book[ticket].balance,
+                    self.book[ticket].baseincrement,
+                )
+                for quantity_str in self.decimal_to_str(quantity)
                 for order_result in await self.post_sapi_v1_margin_order(
                     {
                         "symbol": f"{ticket}USDT",
                         "side": "SELL",
                         "type": "MARKET",
-                        "quantity": str(self.book[ticket].balance),
+                        "quantity": quantity_str,
                         "sideEffectType": "AUTO_BORROW_REPAY",
                     },
                 )
